@@ -878,7 +878,7 @@ golang.org/x/exp/slices
 # golang.org/x/mod v0.12.0
 ## explicit; go 1.17
 golang.org/x/mod/semver
-# golang.org/x/net v0.12.0
+# golang.org/x/net v0.13.0
 ## explicit; go 1.17
 golang.org/x/net/context
 golang.org/x/net/context/ctxhttp
@@ -1083,7 +1083,7 @@ helm.sh/helm/v3/pkg/storage/driver
 helm.sh/helm/v3/pkg/strvals
 helm.sh/helm/v3/pkg/time
 helm.sh/helm/v3/pkg/uploader
-# k8s.io/api v0.28.0-rc.0
+# k8s.io/api v0.28.1
 ## explicit; go 1.20
 k8s.io/api/admission/v1
 k8s.io/api/admission/v1beta1
@@ -1151,7 +1151,7 @@ k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset
 k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme
 k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1
 k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1beta1
-# k8s.io/apimachinery v0.28.0-rc.0
+# k8s.io/apimachinery v0.28.1
 ## explicit; go 1.20
 k8s.io/apimachinery/pkg/api/equality
 k8s.io/apimachinery/pkg/api/errors
@@ -1217,7 +1217,7 @@ k8s.io/cli-runtime/pkg/genericclioptions
 k8s.io/cli-runtime/pkg/genericiooptions
 k8s.io/cli-runtime/pkg/printers
 k8s.io/cli-runtime/pkg/resource
-# k8s.io/client-go v0.28.0-rc.0
+# k8s.io/client-go v0.28.1
 ## explicit; go 1.20
 k8s.io/client-go/applyconfigurations/admissionregistration/v1
 k8s.io/client-go/applyconfigurations/admissionregistration/v1alpha1
@@ -1426,6 +1426,7 @@ k8s.io/client-go/util/flowcontrol
 k8s.io/client-go/util/homedir
 k8s.io/client-go/util/jsonpath
 k8s.io/client-go/util/keyutil
+k8s.io/client-go/util/retry
 k8s.io/client-go/util/workqueue
 # k8s.io/component-base v0.28.0-rc.0
 ## explicit; go 1.20

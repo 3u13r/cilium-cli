@@ -170,7 +170,8 @@ var (
 )
 
 func Run(ctx context.Context, ct *check.ConnectivityTest, addExtraTests func(*check.ConnectivityTest) error,
-	addExtraSetup func(context.Context, *check.ConnectivityTest) error) error {
+	addExtraSetup func(context.Context, *check.ConnectivityTest) error,
+) error {
 	if err := ct.SetupAndValidate(ctx, addExtraSetup); err != nil {
 		return err
 	}
@@ -767,6 +768,21 @@ func Run(ctx context.Context, ct *check.ConnectivityTest, addExtraTests func(*ch
 	}
 
 	if ct.Params().IncludeUnsafeTests {
+		ct.NewTest("node-to-node-strict-wireguard-encryption").
+			WithFeatureRequirements(
+				check.RequireFeatureEnabled(check.FeatureEncryptionPod),
+				check.RequireFeatureEnabled(check.FeatureEncryptionNode),
+				check.RequireFeatureEnabled(check.FeatureStrictEncryption),
+				check.RequireFeatureEnabled(check.FeatureIPv4), // strict encryption only supported for IPv4
+				check.RequireFeatureDisabled(check.FeatureIPv6),
+				check.RequireFeatureEnabled(check.FeatureCiliumEndpointSlice),
+			).
+			WithScenarios(
+				tests.NodeToNodeStrictEncryption(),
+			)
+	}
+
+	if ct.Params().IncludeUnsafeTests {
 		ct.NewTest("egress-gateway").
 			WithCiliumEgressGatewayPolicy(egressGatewayPolicyYAML, check.CiliumEgressGatewayPolicyParams{}).
 			WithIPRoutesFromOutsideToPodCIDRs().
@@ -859,7 +875,7 @@ func Run(ctx context.Context, ct *check.ConnectivityTest, addExtraTests func(*ch
 		WithExpectations(func(a *check.Action) (egress, ingress check.Result) {
 			if a.Source().HasLabel("other", "client") && // Only client2 is allowed to make HTTP calls.
 				(a.Destination().Port() == 8080) { // port 8080 is traffic to echo Pod.
-				if a.Destination().HasLabel("other", "echo") { //we are POSTing only other echo
+				if a.Destination().HasLabel("other", "echo") { // we are POSTing only other echo
 					egress = check.ResultOK
 
 					egress.HTTP = check.HTTP{

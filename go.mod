@@ -32,10 +32,10 @@ require (
 	google.golang.org/grpc v1.58.1
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
 	helm.sh/helm/v3 v3.12.3
-	k8s.io/api v0.28.0-rc.0
-	k8s.io/apimachinery v0.28.0-rc.0
+	k8s.io/api v0.28.1
+	k8s.io/apimachinery v0.28.1
 	k8s.io/cli-runtime v0.28.0-rc.0
-	k8s.io/client-go v0.28.0-rc.0
+	k8s.io/client-go v0.28.1
 	k8s.io/klog/v2 v2.100.1
 	sigs.k8s.io/yaml v1.3.0
 )
@@ -199,8 +199,8 @@ require (
 	go.opentelemetry.io/otel/trace v1.16.0 // indirect
 	go.starlark.net v0.0.0-20230525235612-a134d8f9ddca // indirect
 	golang.org/x/crypto v0.11.0 // indirect
-	golang.org/x/net v0.12.0 // indirect
-	golang.org/x/oauth2 v0.10.0 // indirect
+	golang.org/x/net v0.13.0 // indirect
+	golang.org/x/oauth2 v0.8.0 // indirect
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/sys v0.11.0 // indirect
 	golang.org/x/term v0.10.0 // indirect

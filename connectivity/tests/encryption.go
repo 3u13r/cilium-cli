@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/defaults"
+	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/cilium/cilium-cli/connectivity/check"
 )
@@ -278,65 +280,135 @@ func testNoTrafficLeakStrict(ctx context.Context, t *check.Test,
 			t.Fatalf("Failed to delete CiliumEndpointSlice %s: %s", cesToDelete, err)
 		}
 	}
-	setCiliumOperatorScale := func(replicas int32) int32 {
-		scale, err := clientHost.K8sClient.Clientset.AppsV1().Deployments(t.Context().Params().CiliumNamespace).GetScale(ctx, "cilium-operator", metav1.GetOptions{})
+	deleteCN := func(endpointName string) v2.CiliumNode {
+		cnList, err := clientHost.K8sClient.CiliumClientset.CiliumV2().CiliumNodes().List(ctx, metav1.ListOptions{})
 		if err != nil {
-			t.Fatalf("Failed to get cilium-operator scale: %s", err)
+			t.Fatalf("Failed to list CiliumNodes: %s", err)
 		}
-		savedReplicas := scale.Spec.Replicas
-		scale.Spec.Replicas = replicas
-		if _, err := clientHost.K8sClient.Clientset.AppsV1().Deployments(t.Context().Params().CiliumNamespace).UpdateScale(ctx, "cilium-operator", scale, metav1.UpdateOptions{}); err != nil {
-			t.Fatalf("Failed to scale cilium-operator: %s", err)
-		}
-		return savedReplicas
-	}
-	waitForIPCacheEntry := func(clientPod, dstPod *check.Pod) {
-		timeout := time.After(20 * time.Second)
-		var ciliumHostPodName string
-		for _, pod := range t.Context().CiliumPods() {
-			if pod.NodeName() == clientPod.Pod.Spec.NodeName {
-				ciliumHostPodName = pod.Pod.Name
+		var cnToDelete *v2.CiliumNode
+		for _, cn := range cnList.Items {
+			if cn.Name == endpointName {
+				cnToDelete = cn.DeepCopy()
 				break
 			}
 		}
-		for found := false; !found; {
-			select {
-			case <-timeout:
-				t.Fatalf("Failed to wait for ipcache to contain pod %s's IP", dstPod.Pod.Name)
-			default:
-				cmd := []string{"/bin/sh", "-c", "cilium bpf ipcache list"}
-				out, err := clientPod.K8sClient.ExecInPod(ctx, t.Context().Params().CiliumNamespace, ciliumHostPodName, "", cmd)
-				if err != nil {
-					t.Fatalf("Failed to retrieve ipcache output: %s", err)
-				}
-				if strings.Contains(out.String(), dstPod.Pod.Status.PodIP) {
-					found = true
-					break
-				}
-
-				time.Sleep(500 * time.Millisecond)
-			}
+		if cnToDelete == nil {
+			t.Fatalf("Failed to find CiliumNode for pod %s", server.Pod.Name)
 		}
+		if err := clientHost.K8sClient.CiliumClientset.CiliumV2().CiliumNodes().Delete(ctx, cnToDelete.Name, metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Failed to delete CiliumNode %s: %s", cnToDelete, err)
+		}
+		return *cnToDelete
 	}
 
-	// Disable endpoint propagation by scaling down the cilium-operator in the cilium namespace
-	savedScale := setCiliumOperatorScale(0)
+	func() {
+		// Disable endpoint propagation by scaling down the cilium-operator in the cilium namespace
+		savedScale := setCiliumOperatorScale(ctx, t, clientHost, 0)
+		defer func() {
+			// Restore the cilium-operator scale
+			_ = setCiliumOperatorScale(ctx, t, clientHost, savedScale)
+		}()
 
-	// Delete CES of the server pod
-	deleteCES(server.Pod.Name)
-	deleteCES(client.Pod.Name)
+		// Delete CES of the server pod
+		if !strings.Contains(server.Pod.Name, "netns") {
+			deleteCES(server.Pod.Name)
+		}
+		if !strings.Contains(client.Pod.Name, "netns") {
+			deleteCES(client.Pod.Name)
+		}
 
-	// Run the test
-	testNoTrafficLeak(ctx, t, client, server, clientHost, reqType, ipFam, true)
+		deletedCN := []v2.CiliumNode{}
+		if reqType == requestICMPEcho {
+			// Delete CN of the server pod
+			deletedCN = append(deletedCN, deleteCN(server.Pod.Spec.NodeName))
+		}
+		defer func() {
+			for _, cn := range deletedCN {
+				// Restore the deleted CN
+				toBeCreatedCN := cn.DeepCopy()
+				toBeCreatedCN.ResourceVersion = ""
+				if _, err := clientHost.K8sClient.CiliumClientset.CiliumV2().CiliumNodes().Create(ctx, toBeCreatedCN, metav1.CreateOptions{}); err != nil {
+					t.Fatalf("Failed to create CiliumNode %s: %s", cn.Name, err)
+				}
+			}
+		}()
 
-	// Restore the cilium-operator scale
-	_ = setCiliumOperatorScale(savedScale)
+		waitForIPCacheEntry(ctx, t, client, server, false)
+
+		// Run the test
+		testNoTrafficLeak(ctx, t, client, server, clientHost, reqType, ipFam, true)
+	}()
 
 	// wait for the ipcache to contain the server pod's IP
-	waitForIPCacheEntry(client, server)
+	waitForIPCacheEntry(ctx, t, client, server, true)
 
 	// Run the test
 	testNoTrafficLeak(ctx, t, client, server, clientHost, reqType, ipFam, false)
+}
+
+func setCiliumOperatorScale(ctx context.Context, t *check.Test, clientHost *check.Pod, replicas int32) int32 {
+	var savedReplicas int32
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		scale, err := clientHost.K8sClient.Clientset.AppsV1().Deployments(t.Context().Params().CiliumNamespace).GetScale(ctx, "cilium-operator", metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("Failed to get cilium-operator scale: %w", err)
+		}
+		savedReplicas = scale.Spec.Replicas
+		scale.Spec.Replicas = replicas
+		if _, err := clientHost.K8sClient.Clientset.AppsV1().Deployments(t.Context().Params().CiliumNamespace).UpdateScale(ctx, "cilium-operator", scale, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("Failed to scale cilium-operator: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to scale cilium-operator: %s", err)
+	}
+
+	// Wait for number of pods to be equal to the desired number of replicas
+	timeout := time.After(20 * time.Second)
+	for {
+		select {
+		case <-timeout:
+			t.Fatalf("Failed to wait for cilium-operator to scale to %d replicas", replicas)
+		default:
+			podList, err := clientHost.K8sClient.Clientset.CoreV1().Pods(t.Context().Params().CiliumNamespace).List(ctx, metav1.ListOptions{LabelSelector: "name=cilium-operator"})
+			if err != nil {
+				t.Fatalf("Failed to list cilium-operator pods: %s", err)
+			}
+			if len(podList.Items) == int(replicas) {
+				return savedReplicas
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+}
+
+func waitForIPCacheEntry(ctx context.Context, t *check.Test, clientPod *check.Pod, dstPod *check.Pod, shouldExist bool) {
+	timeout := time.After(20 * time.Second)
+	var ciliumHostPodName string
+	for _, pod := range t.Context().CiliumPods() {
+		if pod.NodeName() == clientPod.Pod.Spec.NodeName {
+			ciliumHostPodName = pod.Pod.Name
+			break
+		}
+	}
+	for {
+		select {
+		case <-timeout:
+			t.Fatalf("Failed to wait for ipcache to contain pod %s's IP", dstPod.Pod.Name)
+		default:
+			cmd := []string{"/bin/sh", "-c", "cilium bpf ipcache list | cut -d' ' -f 1"}
+			out, err := clientPod.K8sClient.ExecInPod(ctx, t.Context().Params().CiliumNamespace, ciliumHostPodName, "", cmd)
+			if err != nil {
+				t.Fatalf("Failed to retrieve ipcache output: %s", err)
+			}
+			if strings.Contains(out.String(), dstPod.Pod.Status.PodIP) == shouldExist {
+				return
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 }
 
 func testNoTrafficLeak(ctx context.Context, t *check.Test, client, server, clientHost *check.Pod,
@@ -344,6 +416,14 @@ func testNoTrafficLeak(ctx context.Context, t *check.Test, client, server, clien
 ) {
 	// Setup
 	killCmd, bgExited := startTcpdump(ctx, t, client, server, clientHost, reqType, ipFam)
+	defer func() {
+		// Wait until tcpdump has exited
+		killCmd()
+		<-bgExited
+
+		// Assert no traffic leak
+		checkPcapForLeak(ctx, t, clientHost)
+	}()
 
 	var cmd []string
 	// Run the test
@@ -358,19 +438,14 @@ func testNoTrafficLeak(ctx context.Context, t *check.Test, client, server, clien
 		t.Fatalf("Invalid request type: %d", reqType)
 	}
 
+	t.Debugf("Running %s", strings.Join(cmd, " "))
 	_, err := client.K8sClient.ExecInPod(ctx, client.Pod.Namespace, client.Pod.Name, "", cmd)
 	if expectFail && err == nil {
 		t.Failf("Expected curl to fail, but it succeeded")
+		time.Sleep(10 * time.Minute)
 	} else if !expectFail && err != nil {
 		t.Fatalf("Failed to curl server: %s", err)
 	}
-
-	// Wait until tcpdump has exited
-	killCmd()
-	<-bgExited
-
-	// Assert no traffic leak
-	checkPcapForLeak(ctx, t, clientHost)
 }
 
 // bytes.Buffer from the stdlib is non-thread safe, thus our custom
@@ -442,5 +517,44 @@ func (s *nodeToNodeEncryption) Run(ctx context.Context, t *check.Test) {
 		testNoTrafficLeak(ctx, t, &clientHost, &serverHost, &clientHost, requestICMPEcho, ipFam, false)
 		// Test host-to-remote-pod
 		testNoTrafficLeak(ctx, t, &clientHost, &server, &clientHost, requestHTTP, ipFam, false)
+	})
+}
+
+func NodeToNodeStrictEncryption() check.Scenario {
+	return &nodeToNodeStrictEncryption{}
+}
+
+type nodeToNodeStrictEncryption struct{}
+
+func (s *nodeToNodeStrictEncryption) Name() string {
+	return "node-to-node-strict-encryption"
+}
+
+func (s *nodeToNodeStrictEncryption) Run(ctx context.Context, t *check.Test) {
+	client := t.Context().RandomClientPod()
+
+	var server check.Pod
+	for _, pod := range t.Context().EchoPods() {
+		// Make sure that the server pod is on another node than client
+		if pod.Pod.Status.HostIP != client.Pod.Status.HostIP {
+			server = pod
+			break
+		}
+	}
+
+	// clientHost is a pod running on the same node as the client pod, just in
+	// the host netns.
+	clientHost := t.Context().HostNetNSPodsByNode()[client.Pod.Spec.NodeName]
+	// serverHost is a pod running in a remote node's host netns.
+	serverHost := t.Context().HostNetNSPodsByNode()[server.Pod.Spec.NodeName]
+
+	t.ForEachIPFamily(func(ipFam check.IPFamily) {
+		// Test pod-to-remote-host (ICMP Echo instead of HTTP because a remote host
+		// does not have a HTTP server running)
+		testNoTrafficLeakStrict(ctx, t, client, &serverHost, &clientHost, requestICMPEcho, ipFam)
+		// Test host-to-remote-host
+		testNoTrafficLeakStrict(ctx, t, &clientHost, &serverHost, &clientHost, requestICMPEcho, ipFam)
+		// Test host-to-remote-pod
+		testNoTrafficLeakStrict(ctx, t, &clientHost, &server, &clientHost, requestHTTP, ipFam)
 	})
 }
